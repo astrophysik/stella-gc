@@ -1,0 +1,5 @@
+[
+  {"name": "empty", "args": ["0"], "stdout": "0\n"},
+  {"name": "one-batch", "args": ["1"], "stdout": "0\n"},
+  {"name": "five-batches", "args": ["5", "1048576"], "stdout": "10\n"}
+]

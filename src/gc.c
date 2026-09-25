@@ -5,7 +5,7 @@
  * в самой заглушке ничего не делают. */
 #include <stella/gc.h>
 
-#include "internal/gc_stats.h"
+#include "../internal/gc_stats.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -615,4 +615,3 @@ void stella_gc_print_state(FILE *output) {
   }
   stella_gc_print_roots(output);
 }
-

@@ -1,0 +1,5 @@
+[
+  {"name": "zero", "args": ["0"], "stdout": "0\n"},
+  {"name": "one", "args": ["1"], "stdout": "2\n"},
+  {"name": "ten", "args": ["10", "1048576"], "stdout": "20\n"}
+]
