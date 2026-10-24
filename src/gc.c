@@ -244,9 +244,11 @@ const int32_t WHITE_COLOR = 0;
 const int32_t GREY_COLOR = 1;
 const int32_t BLACK_COLOR = 2;
 
-const size_t EXPECTATION = 0;
-const size_t MARKING = 1;
-const size_t SWEEP = 2;
+enum Phase {
+  EXPECTATION,
+  MARKING,
+  SWEEP
+};
 
 #ifndef GC_MARK_STEPS
 #define GC_MARK_STEPS 5
@@ -256,7 +258,7 @@ const size_t SWEEP = 2;
 #define GC_HEAP_THRESHOLD 0.75
 #endif
 
-static size_t gc_phase;
+static enum Phase gc_phase;
 
 static int32_t object_get_color(StellaValue object) { return object->gc_word; }
 
@@ -264,12 +266,14 @@ static void object_set_color(StellaValue object, int32_t color) {
   object->gc_word = color;
 }
 
-static void gc_object_shade(StellaValue object) {
+static bool gc_object_shade(StellaValue object) {
   if (object != NULL && object->gc_word == WHITE_COLOR &&
       (object->descriptor->flags & STELLA_DESCRIPTOR_STATIC) == 0) {
     object->gc_word = GREY_COLOR;
     gc_push_grey_object(object);
+    return true;
   }
+  return false;
 }
 
 static void gc_mark_step() {
@@ -352,6 +356,7 @@ static void gc_poll(size_t requested_bytes) {
     }
     break;
   case MARKING:
+    counters.incremental_steps_count++;
     if (!gc_mark_steps()) {
       return;
     }
@@ -400,14 +405,14 @@ static void gc_on_alloc(size_t requested_bytes) {
 }
 
 static void gc_write_barrier(StellaValue object, StellaValue value) {
-  counters.write_barrier_activations++;
   if (gc_phase != MARKING) {
     return;
   }
 
-  counters.write_barrier_activations_on_marking++;
   if (object->gc_word == BLACK_COLOR) {
-    gc_object_shade(value);
+    if (gc_object_shade(value)) {
+      counters.write_barrier_activations++;
+    }
   }
 }
 
@@ -424,7 +429,14 @@ void stella_gc_init(const StellaGcConfig *config) {
   if (config->max_heap_bytes == 0) {
     stella_abi_violation("zero maximum heap size");
   }
+  if (GC_MARK_STEPS <= 0) {
+    stella_abi_violation("gс mark steps should be positive number");
+  }
+  if (GC_HEAP_THRESHOLD < 0.0 || GC_HEAP_THRESHOLD > 1.0) {
+    stella_abi_violation("gс heap threshold should be a real number between [0, 1]");
+  }
   max_heap_bytes = config->max_heap_bytes;
+
   lifecycle = LIFECYCLE_ACTIVE;
 }
 
@@ -463,6 +475,10 @@ void stella_gc_push_root(StellaValue *root) {
   }
   grow_roots(&dynamic_roots, &dynamic_root_capacity, dynamic_root_depth + 1);
   dynamic_roots[dynamic_root_depth++] = root;
+  counters.dynamic_root_depth = dynamic_root_depth;
+  if (dynamic_root_depth > counters.maximum_dynamic_root_depth) {
+    counters.maximum_dynamic_root_depth = dynamic_root_depth;
+  }
 }
 
 void stella_gc_pop_root(StellaValue *root) {
@@ -474,6 +490,7 @@ void stella_gc_pop_root(StellaValue *root) {
     stella_abi_violation("dynamic roots popped out of order");
   }
   --dynamic_root_depth;
+  counters.dynamic_root_depth = dynamic_root_depth;
 }
 
 void stella_gc_register_permanent_root(StellaValue *root) {
@@ -570,7 +587,6 @@ void stella_object_init_managed(StellaValue object, size_t index,
   if (allocation->initialised[index] != 0) {
     stella_abi_violation("managed field initialised more than once");
   }
-  GC_WRITE_BARRIER(object, value);
   object->fields[index].managed = value;
   allocation->initialised[index] = 1;
 }
@@ -593,6 +609,7 @@ void stella_object_init_primitive(StellaValue object, size_t index,
 StellaValue stella_gc_read_managed(StellaValue *object_root, size_t index) {
   require_active();
   require_registered_root(object_root);
+  counters.managed_reads++;
   GC_BEFORE_READ(object_root);
   validate_object(*object_root);
   if (index >= (*object_root)->descriptor->managed_count) {
@@ -606,6 +623,7 @@ void stella_gc_write_managed(StellaValue *object_root, size_t index,
   require_active();
   require_registered_root(object_root);
   require_registered_root(value_root);
+  counters.managed_writes++;
   GC_BEFORE_WRITE(object_root);
   validate_object(*object_root);
   if (((*object_root)->descriptor->flags & STELLA_DESCRIPTOR_STATIC) != 0) {
@@ -621,6 +639,7 @@ void stella_gc_write_managed(StellaValue *object_root, size_t index,
 StellaPrimitive stella_object_read_primitive(StellaValue object, size_t index) {
   require_active();
   validate_object(object);
+  counters.primitive_reads++;
   if (index >= object->descriptor->primitive_count) {
     stella_abi_violation("primitive read index out of range");
   }
@@ -631,6 +650,7 @@ void stella_object_write_primitive(StellaValue object, size_t index,
                                    StellaPrimitive value) {
   require_active();
   validate_object(object);
+  counters.primitive_writes++;
   if ((object->descriptor->flags & STELLA_DESCRIPTOR_STATIC) != 0) {
     stella_abi_violation("primitive write to static object");
   }
@@ -670,11 +690,13 @@ void stella_gc_update_object(StellaValue *object_root,
   allocation = require_heap_object(*object_root);
 
   for (size_t i = 0; i < new_descriptor->managed_count; ++i) {
+    counters.managed_writes++;
     GC_WRITE_BARRIER(*object_root, *new_managed_roots[i]);
     (*object_root)->fields[i].managed = *new_managed_roots[i];
     allocation->initialised[i] = 1;
   }
   for (size_t i = 0; i < new_descriptor->primitive_count; ++i) {
+    counters.primitive_writes++;
     size_t physical = new_descriptor->managed_count + i;
     (*object_root)->fields[physical].primitive = new_primitives[i];
     allocation->initialised[physical] = 1;
@@ -700,10 +722,10 @@ void stella_gc_print_statistics(FILE *output) {
   fprintf(output, "occupied bytes: %zu\n", counters.occupied_bytes);
   fprintf(output, "maximum occupied bytes: %zu\n",
           counters.maximum_occupied_bytes);
+  fprintf(output, "read barrier activations: %zu\n",
+          counters.read_barrier_activations);
   fprintf(output, "write barrier activations: %zu\n",
           counters.write_barrier_activations);
-  fprintf(output, "write barrier activations on marking: %zu\n",
-          counters.write_barrier_activations_on_marking);
   fprintf(output, "allocations over budget: %zu\n",
           counters.allocations_over_budget);
   fprintf(output, "reclaimed objects: %zu\n", counters.reclaimed_objects);
@@ -712,8 +734,16 @@ void stella_gc_print_statistics(FILE *output) {
   fprintf(output, "maximum grey object count: %zu\n",
           counters.maximum_grey_object_count);
   fprintf(output, "scanned objects: %zu\n", counters.scanned_objects);
-  fprintf(output, "dynamic roots: %zu\n", dynamic_root_depth);
+  fprintf(output, "dynamic roots: %zu\n", counters.dynamic_root_depth);
+  fprintf(output, "maximum dynamic roots: %zu\n",
+          counters.maximum_dynamic_root_depth);
   fprintf(output, "permanent roots: %zu\n", permanent_root_count);
+  fprintf(output, "managed reads: %zu\n", counters.managed_reads);
+  fprintf(output, "managed writes: %zu\n", counters.managed_writes);
+  fprintf(output, "primitive reads: %zu\n", counters.primitive_reads);
+  fprintf(output, "primitive writes: %zu\n", counters.primitive_writes);
+  fprintf(output, "incremental steps count: %zu\n",
+          counters.incremental_steps_count);
 }
 
 void stella_gc_print_roots(FILE *output) {
@@ -778,7 +808,7 @@ void stella_gc_print_state(FILE *output) {
   }
   fprintf(output, "Incremental gc phase%s\n", gc_phase_string());
   fprintf(output, "Grey objects information\n");
-  for (int i = 0; i < grey_object_count; ++i) {
+  for (size_t i = 0; i < grey_object_count; ++i) {
     fprintf(output, "object=%p\n", (void *)grey_objects[i]);
   }
   stella_gc_print_roots(output);

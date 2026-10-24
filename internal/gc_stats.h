@@ -9,14 +9,21 @@ typedef struct StellaGcStats {
   size_t collections;
   size_t occupied_bytes;
   size_t maximum_occupied_bytes;
+  size_t read_barrier_activations;
   size_t write_barrier_activations;
-  size_t write_barrier_activations_on_marking;
+  size_t incremental_steps_count;
   size_t allocations_over_budget;
   size_t reclaimed_objects;
   size_t reclaimed_bytes;
   size_t grey_object_count;
   size_t maximum_grey_object_count;
   size_t scanned_objects;
+  size_t managed_reads;
+  size_t managed_writes;
+  size_t primitive_reads;
+  size_t primitive_writes;
+  size_t dynamic_root_depth;
+  size_t maximum_dynamic_root_depth;
 } StellaGcStats;
 
 #endif
