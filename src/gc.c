@@ -517,7 +517,7 @@ void stella_gc_register_permanent_root(StellaValue *root) {
 #define GC_BEFORE_UPDATE(root) ((void)0)
 #define GC_WRITE_BARRIER(owner, value) gc_write_barrier(owner, value)
 #define GC_ALLOCATION_INIT(allocation) ((void)0)
-#define GC_DESCRIPTION "malloc stub"
+#define GC_DESCRIPTION "Incremental mark-and-sweep GC"
 #endif
 
 StellaValue stella_gc_alloc(const StellaObjectDescriptor *descriptor) {
@@ -806,7 +806,7 @@ void stella_gc_print_state(FILE *output) {
               object->fields[descriptor->managed_count + i].primitive);
     }
   }
-  fprintf(output, "Incremental gc phase%s\n", gc_phase_string());
+  fprintf(output, "Incremental gc phase %s\n", gc_phase_string());
   fprintf(output, "Grey objects information\n");
   for (size_t i = 0; i < grey_object_count; ++i) {
     fprintf(output, "object=%p\n", (void *)grey_objects[i]);
